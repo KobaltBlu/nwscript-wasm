@@ -1,0 +1,121 @@
+name: Build WASM Release
+
+on:
+  push:
+    paths-ignore:
+      - "dist/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-wasm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Automatically build pushes only on the repository's default branch.
+    # workflow_dispatch can still be run manually from another branch.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Show Node versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Install Emscripten SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EMSDK_DIR="$RUNNER_TEMP/emsdk"
+
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$EMSDK_DIR"
+
+          cd "$EMSDK_DIR"
+          ./emsdk install 6.0.6
+          ./emsdk activate 6.0.6
+
+          # Persist the paths/environment for later workflow steps.
+          source ./emsdk_env.sh
+
+          echo "EMSDK=$EMSDK" >> "$GITHUB_ENV"
+          echo "EMSDK_NODE=$EMSDK_NODE" >> "$GITHUB_ENV"
+          echo "EMSDK_PYTHON=$EMSDK_PYTHON" >> "$GITHUB_ENV"
+
+          echo "$EMSDK" >> "$GITHUB_PATH"
+          echo "$EMSDK/upstream/emscripten" >> "$GITHUB_PATH"
+
+      - name: Verify Emscripten
+        run: |
+          em++ --version
+
+      - name: Fetch pinned neverwinter.nim dependency
+        run: npm run deps
+
+      - name: Build WebAssembly distribution
+        run: npm run build
+
+      - name: Show build output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Generated dist:"
+          find dist -maxdepth 1 -type f -printf "%f  %s bytes\n" | sort
+
+      - name: Check for dist changes
+        id: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add -f dist
+
+          if git diff --cached --quiet -- dist; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "dist is already up to date."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "dist changed:"
+            git diff --cached --stat -- dist
+          fi
+
+      - name: Commit latest dist
+        if: >
+          steps.dist.outputs.changed == 'true' &&
+          github.event_name == 'push' &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit -m "build: update dist [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nwscript-wasm-dist
+          path: dist/
+          if-no-files-found: error
