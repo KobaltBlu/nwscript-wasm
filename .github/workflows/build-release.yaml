@@ -58,7 +58,7 @@ jobs:
 
           echo "EMSDK=$EMSDK" >> "$GITHUB_ENV"
           echo "EMSDK_NODE=$EMSDK_NODE" >> "$GITHUB_ENV"
-          echo "EMSDK_PYTHON=$EMSDK_PYTHON" >> "$GITHUB_ENV"
+          # echo "EMSDK_PYTHON=$EMSDK_PYTHON" >> "$GITHUB_ENV"
 
           echo "$EMSDK" >> "$GITHUB_PATH"
           echo "$EMSDK/upstream/emscripten" >> "$GITHUB_PATH"
