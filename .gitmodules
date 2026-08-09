@@ -1,0 +1,3 @@
+[submodule "deps/neverwinter.nim"]
+  path = deps/neverwinter.nim
+  url = https://github.com/niv/neverwinter.nim.git

@@ -1,0 +1,24 @@
+{
+  "name": "@neverwinter/nwscript-wasm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deps": "node ./scripts/fetch-upstream.mjs",
+    "build": "node ./scripts/build.mjs",
+    "rebuild": "npm run deps && npm run build"
+  },
+  "bin": {
+    "nwscript-compile": "./scripts/compile-nss.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "scripts/compile-nss.mjs"
+  ]
+}

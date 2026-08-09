@@ -1,0 +1,12 @@
+dist/
+node_modules/
+nss/
+
+# The upstream compiler is an external dependency. In a real git checkout this
+# path should be a submodule; the fetch script also supports cloning it when the
+# project is distributed as an archive without git metadata.
+/deps/neverwinter.nim/
+
+# Generated build source and local game language specs.
+/generated/
+/games/*/nwscript.nss
