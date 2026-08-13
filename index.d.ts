@@ -79,9 +79,64 @@ export interface NcsHeader {
   parts: NcsInstructionPart[];
 }
 
+export interface NcsInspectionError {
+  message: string;
+  fileOffset?: number;
+}
+
 export interface NcsInspection {
   header: NcsHeader;
   instructions: NcsInstruction[];
+  error?: NcsInspectionError;
+}
+
+export interface NdbStructField {
+  type: string;
+  label: string;
+}
+
+export interface NdbStruct {
+  label: string;
+  fields: NdbStructField[];
+}
+
+export interface NdbFunction {
+  label: string;
+  fileOffsetStart: number;
+  fileOffsetEnd: number;
+  codeOffsetStart: number;
+  codeOffsetEnd: number;
+  returnType: string;
+  args: string[];
+}
+
+export interface NdbVariable {
+  label: string;
+  type: string;
+  fileOffsetStart: number;
+  fileOffsetEnd: number;
+  codeOffsetStart: number;
+  codeOffsetEnd: number;
+  stackLoc: number;
+}
+
+export interface NdbLine {
+  fileIndex: number;
+  file: string;
+  line: number;
+  fileOffsetStart: number;
+  fileOffsetEnd: number;
+  codeOffsetStart: number;
+  codeOffsetEnd: number;
+}
+
+export interface NdbInspection {
+  version: string;
+  files: string[];
+  structs: NdbStruct[];
+  functions: NdbFunction[];
+  variables: NdbVariable[];
+  lines: NdbLine[];
 }
 
 export interface NcsInspectOptions {
@@ -104,6 +159,11 @@ export declare class NWScriptCompiler {
     options?: NcsInspectOptions,
   ): Promise<NcsInspection>;
 
+  static inspectNdb(
+    ndb: string | Uint8Array,
+    options?: { moduleOptions?: Record<string, unknown> },
+  ): Promise<NdbInspection>;
+
   addSource(name: string, source: string | Uint8Array, resType?: number): this;
   addSources(sources: Record<string, string | Uint8Array>, resType?: number): this;
   removeSource(name: string, resType?: number): boolean;
@@ -113,6 +173,7 @@ export declare class NWScriptCompiler {
   compile(name: string, source?: string | Uint8Array): NWScriptCompileResult;
   disassemble(ncs: string | Uint8Array): string;
   inspectNcs(ncs: string | Uint8Array): NcsInspection;
+  inspectNdb(ndb: string | Uint8Array): NdbInspection;
   dispose(): void;
 }
 

@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Vitest suite covering the JavaScript API, CLI, WASM/JS ABI completeness, and embedded game-target generation, using original `test/fixtures` language specs rather than game `nwscript.nss` files.
 
+## [0.1.3] - 2026-08-13
+
+### Added
+
+- `inspectNdb()` for structured NDB V1.0 debug mapping (files, functions, variables, source lines).
+- Partial `inspectNcs()` results when bytecode is truncated or contains an unknown opcode after valid instructions.
+
 ## [0.1.2] - 2026-08-12
 
 ### Added

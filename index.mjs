@@ -166,6 +166,45 @@ function readModuleBuffer(module, ptr, size) {
   return module.HEAPU8.slice(ptr, ptr + size);
 }
 
+function callInspect(module, bytes, fnName, dataFn, sizeFn, errorDataFn, errorSizeFn, label) {
+  const dataPtr = module._malloc(Math.max(bytes.byteLength, 1));
+  if (!dataPtr) {
+    throw new Error("WASM allocation failed");
+  }
+
+  try {
+    if (bytes.byteLength > 0) {
+      module.HEAPU8.set(bytes, dataPtr);
+    }
+    const code = module[fnName](dataPtr, bytes.byteLength);
+    if (code !== 0) {
+      const message = decoder.decode(
+        readModuleBuffer(module, module[errorDataFn](), module[errorSizeFn]()),
+      ).trim();
+      throw new Error(message || `Failed to ${label} (${code})`);
+    }
+    const json = decoder.decode(
+      readModuleBuffer(module, module[dataFn](), module[sizeFn]()),
+    );
+    return JSON.parse(json);
+  } finally {
+    module._free(dataPtr);
+  }
+}
+
+function inspectNdbWithModule(module, ndb) {
+  return callInspect(
+    module,
+    asBytes(ndb),
+    "_nwsc_inspect_ndb",
+    "_nwsc_ndb_inspection_data",
+    "_nwsc_ndb_inspection_size",
+    "_nwsc_ndb_error_data",
+    "_nwsc_ndb_error_size",
+    "inspect NDB",
+  );
+}
+
 function inspectNcsWithModule(module, ncs, actionNames) {
   const bytes = asBytes(ncs);
   const names = Array.isArray(actionNames) ? actionNames.join("\n") : "";
@@ -322,6 +361,11 @@ export class NWScriptCompiler {
     return inspectNcsWithModule(module, ncs, actionNames);
   }
 
+  static async inspectNdb(ndb, options = {}) {
+    const module = await getStandaloneInspectModule(options?.moduleOptions);
+    return inspectNdbWithModule(module, ndb);
+  }
+
   #module;
   #handle;
   #sourceResType;
@@ -462,6 +506,11 @@ export class NWScriptCompiler {
   inspectNcs(ncs) {
     this.#assertAlive();
     return inspectNcsWithModule(this.#module, ncs, this.#actionNames);
+  }
+
+  inspectNdb(ndb) {
+    this.#assertAlive();
+    return inspectNdbWithModule(this.#module, ndb);
   }
 
   dispose() {

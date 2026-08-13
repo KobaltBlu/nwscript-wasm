@@ -69,6 +69,11 @@ const exportedFunctions = [
   "_nwsc_inspect_ncs",
   "_nwsc_inspection_data",
   "_nwsc_inspection_size",
+  "_nwsc_inspect_ndb",
+  "_nwsc_ndb_inspection_data",
+  "_nwsc_ndb_inspection_size",
+  "_nwsc_ndb_error_data",
+  "_nwsc_ndb_error_size",
 ];
 
 const exportedRuntimeMethods = ["HEAPU8"];
@@ -90,6 +95,7 @@ const args = [
   resolve(native, "scriptcompfinalcode.cpp"),
   resolve(projectRoot, "compiler_wasm.cpp"),
   resolve(projectRoot, "ncs_disassembler.cpp"),
+  resolve(projectRoot, "ndb_inspector.cpp"),
   embedded.sourceFile,
   "-sWASM=1",
   "-sMODULARIZE=1",

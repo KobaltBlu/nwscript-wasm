@@ -28,6 +28,7 @@ namespace {
 thread_local std::string gDisassembly;
 thread_local std::string gInspection;
 thread_local std::string gDisassemblyError;
+thread_local size_t gErrorFileOffset = static_cast<size_t>(-1);
 
 struct Instruction {
   size_t offset = 0;      // code offset (header excluded)
@@ -285,10 +286,13 @@ bool parseInstructions(
     const uint8_t* data,
     size_t size,
     std::vector<Instruction>& out,
-    NcsHeader& header) {
+    NcsHeader& header,
+    bool allowPartial) {
   header = {};
+  gErrorFileOffset = static_cast<size_t>(-1);
   if (data == nullptr || size == 0) {
     gDisassemblyError = "NCS input is empty";
+    gErrorFileOffset = 0;
     return false;
   }
 
@@ -296,10 +300,12 @@ bool parseInstructions(
   if (size >= 8 && std::memcmp(data, "NCS V1.0", 8) == 0) {
     if (size < 13) {
       gDisassemblyError = "Truncated NCS header";
+      gErrorFileOffset = 0;
       return false;
     }
     if (data[8] != 'B') {
       gDisassemblyError = "Invalid NCS header byte at offset 8";
+      gErrorFileOffset = 8;
       return false;
     }
     header.present = true;
@@ -309,10 +315,15 @@ bool parseInstructions(
     pos = 13;
   }
 
+  auto fail = [&](const std::string& message, size_t fileOffset) {
+    gDisassemblyError = message;
+    gErrorFileOffset = fileOffset;
+    return allowPartial && !out.empty();
+  };
+
   while (pos < size) {
     if (size - pos < 2) {
-      gDisassemblyError = "Truncated NCS instruction at offset 0x" + hexValue(pos, 8);
-      return false;
+      return fail("Truncated NCS instruction at offset 0x" + hexValue(pos, 8), pos);
     }
 
     Instruction ins;
@@ -322,23 +333,22 @@ bool parseInstructions(
     ins.aux = data[pos++];
 
     if (opName(ins.op) == nullptr) {
-      gDisassemblyError = "Unknown NCS opcode 0x" + hexValue(ins.op, 2) +
-                          " at offset 0x" + hexValue(ins.offset, 8);
-      return false;
+      return fail(
+          "Unknown NCS opcode 0x" + hexValue(ins.op, 2) +
+              " at offset 0x" + hexValue(ins.offset, 8),
+          ins.fileOffset);
     }
 
     size_t extraSize = fixedExtraSize(ins.op, ins.aux);
     if (extraSize == static_cast<size_t>(-1)) {
       if (size - pos < 2) {
-        gDisassemblyError = "Truncated NCS string length at offset 0x" + hexValue(ins.offset, 8);
-        return false;
+        return fail("Truncated NCS string length at offset 0x" + hexValue(ins.offset, 8), ins.fileOffset);
       }
       extraSize = 2 + readU16(data + pos);
     }
 
     if (extraSize > size - pos) {
-      gDisassemblyError = "Truncated NCS operand at offset 0x" + hexValue(ins.offset, 8);
-      return false;
+      return fail("Truncated NCS operand at offset 0x" + hexValue(ins.offset, 8), ins.fileOffset);
     }
 
     ins.extra.assign(data + pos, data + pos + extraSize);
@@ -868,7 +878,15 @@ std::string buildInspectionJson(
     out << '}';
   }
 
-  out << "]}";
+  out << ']';
+  if (!gDisassemblyError.empty()) {
+    out << ",\"error\":{\"message\":" << jsonEscape(gDisassemblyError);
+    if (gErrorFileOffset != static_cast<size_t>(-1)) {
+      out << ",\"fileOffset\":" << gErrorFileOffset;
+    }
+    out << '}';
+  }
+  out << '}';
   return out.str();
 }
 
@@ -877,8 +895,9 @@ bool decodeNcs(
     size_t size,
     NcsHeader& header,
     std::vector<Instruction>& instructions,
-    std::unordered_map<size_t, std::string>& labels) {
-  if (!parseInstructions(data, size, instructions, header)) {
+    std::unordered_map<size_t, std::string>& labels,
+    bool allowPartial) {
+  if (!parseInstructions(data, size, instructions, header, allowPartial)) {
     return false;
   }
   labels = buildLabels(instructions);
@@ -899,7 +918,7 @@ NWSC_DISASM_EXPORT int32_t nwsc_disassemble(
   NcsHeader header;
   std::vector<Instruction> instructions;
   std::unordered_map<size_t, std::string> labels;
-  if (!decodeNcs(data, size, header, instructions, labels)) {
+  if (!decodeNcs(data, size, header, instructions, labels, false)) {
     return 1;
   }
 
@@ -949,7 +968,7 @@ NWSC_DISASM_EXPORT int32_t nwsc_inspect_ncs(
   NcsHeader header;
   std::vector<Instruction> instructions;
   std::unordered_map<size_t, std::string> labels;
-  if (!decodeNcs(data, size, header, instructions, labels)) {
+  if (!decodeNcs(data, size, header, instructions, labels, true)) {
     return 1;
   }
 
