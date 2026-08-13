@@ -45,6 +45,7 @@ export declare class NWScriptCompiler {
   setOptimizationFlags(flags: number): void;
   setDebugOutput(enabled: boolean): void;
   compile(name: string, source?: string | Uint8Array): NWScriptCompileResult;
+  disassemble(ncs: string | Uint8Array): string;
   dispose(): void;
 }
 

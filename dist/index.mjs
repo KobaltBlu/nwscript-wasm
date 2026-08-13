@@ -16,6 +16,17 @@ export const OptimizationFlags = Object.freeze({
   O3: 0x1 | 0x4 | 0x2,
 });
 
+const EXPECTED_ABI_VERSION = 1;
+
+function assertAbiVersion(module) {
+  const version = module._nwsc_abi_version();
+  if (version !== EXPECTED_ABI_VERSION) {
+    throw new Error(
+      `Unsupported NWScript WASM ABI version ${version}; expected ${EXPECTED_ABI_VERSION}`,
+    );
+  }
+}
+
 
 function readCString(module, ptr) {
   if (!ptr) {
@@ -151,6 +162,7 @@ function asBytes(value) {
 export class NWScriptCompiler {
   static async getEmbeddedGameTargets(moduleOptions = {}) {
     const module = await createNWScriptModule(moduleOptions);
+    assertAbiVersion(module);
     return getEmbeddedTargetNames(module);
   }
 
@@ -169,6 +181,7 @@ export class NWScriptCompiler {
     } = options ?? {};
 
     const module = await createNWScriptModule(moduleOptions);
+    assertAbiVersion(module);
     const compiler = new NWScriptCompiler(module, {
       sourceResType,
       binaryResType,
@@ -270,9 +283,13 @@ export class NWScriptCompiler {
 
   removeSource(name, resType = this.#sourceResType) {
     this.#assertAlive();
-    return this.#withCString(name, (namePtr) =>
-      this.#module._nwsc_remove_source(this.#handle, namePtr, resType) !== 0,
+    const code = this.#withCString(name, (namePtr) =>
+      this.#module._nwsc_remove_source(this.#handle, namePtr, resType),
     );
+    if (code < 0) {
+      throw new Error(this.#readError() || `Failed to remove source ${name} (${code})`);
+    }
+    return code === 1;
   }
 
   clearSources() {

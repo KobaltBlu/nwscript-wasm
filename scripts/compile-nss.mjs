@@ -15,16 +15,19 @@ const packageRoot = path.resolve(__dirname, "..");
 function usage(exitCode = 0) {
   console.log(`
 Usage:
-  node compile-nss.mjs --package <path> --source <script.nss> --nwscript <nwscript.nss>
-  node compile-nss.mjs --package <path> --source <script.nss> --game <target>
+  node compile-nss.mjs --source <script.nss> --nwscript <nwscript.nss>
+  node compile-nss.mjs --source <script.nss> --game <target>
+  node compile-nss.mjs --disassemble <script.ncs> --game <target>
 
 Options:
-  --package <path>     Path to the compiled WASM package directory.
   --source <path>      Path to the NSS source file to compile.
+  --disassemble <path> Path to the NCS file to disassemble.
+                       Mutually exclusive with --source.
   --nwscript <path>    Path to an explicit nwscript.nss language definition.
                        Takes precedence over --game.
   --game <target>      Embedded game target, e.g. k1 or k2.
-  --out <path>         Output .ncs path. Defaults beside the source file.
+  --out <path>         Output path. Defaults beside the source file
+                       (.ncs for compile, .asm for disassemble).
   --debug              Request debugger output and write .ndb when produced.
   --include <dir>      Additional directory containing .nss include files.
                        May be supplied more than once.
@@ -90,33 +93,6 @@ function parseArgs(argv) {
   }
 
   return args;
-}
-
-async function findPackageEntry(packagePath) {
-  const resolved = path.resolve(packagePath);
-
-  const candidates = [
-    resolved,
-    path.join(resolved, "index.mjs"),
-    path.join(resolved, "dist", "index.mjs"),
-  ];
-
-  for (const candidate of candidates) {
-    try {
-      const stat = await fs.stat(candidate);
-
-      if (stat.isFile()) {
-        return candidate;
-      }
-    } catch {
-      // Try next candidate.
-    }
-  }
-
-  throw new Error(
-    `Could not find package entry point under: ${resolved}\n` +
-    "Expected index.mjs directly or under dist/.",
-  );
 }
 
 function normalizeResRef(filePath) {
@@ -377,9 +353,7 @@ async function main() {
         "unknown";
 
       const message =
-        result.error ??
-        result.message ??
-        result.str ??
+        result.error ||
         "Compilation failed.";
 
       throw new Error(
@@ -433,7 +407,7 @@ async function main() {
 
     if (
       args.debug &&
-      result.debugcode?.byteLength
+      result.debugCode?.byteLength
     ) {
       const debugPath =
         outputPath.replace(
@@ -444,7 +418,7 @@ async function main() {
       await fs.writeFile(
         debugPath,
         Buffer.from(
-          result.debugcode,
+          result.debugCode,
         ),
       );
 
