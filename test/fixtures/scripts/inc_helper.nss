@@ -1,0 +1,3 @@
+void Helper() {
+  PrintString("helper");
+}

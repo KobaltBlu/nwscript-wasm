@@ -1,12 +1,15 @@
 {
   "name": "@neverwinter/nwscript-wasm",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
     "deps": "node ./scripts/fetch-upstream.mjs",
     "build": "node ./scripts/build.mjs",
-    "rebuild": "npm run deps && npm run build"
+    "rebuild": "npm run deps && npm run build",
+    "pretest": "node ./scripts/copy-wrappers.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "bin": {
     "nwscript-compile": "./scripts/compile-nss.mjs"
@@ -20,5 +23,8 @@
   "files": [
     "dist",
     "scripts/compile-nss.mjs"
-  ]
+  ],
+  "devDependencies": {
+    "vitest": "^4.1.10"
+  }
 }

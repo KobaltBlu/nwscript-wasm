@@ -76,6 +76,23 @@ A complete rebuild of the upstream dependency and WASM package can be performed 
 npm run rebuild
 ```
 
+## Testing
+
+The suite uses Vitest and exercises the published `dist/` package, so a WASM build must exist first:
+
+```bash
+npm run build
+npm test
+```
+
+`npm test` copies `index.mjs` and `index.d.ts` into `dist/` before running, so JavaScript wrapper edits are tested without rebuilding the WASM module. Compile tests use the original language specification under `test/fixtures/` and do not require game `nwscript.nss` files.
+
+Watch mode:
+
+```bash
+npm run test:watch
+```
+
 ## What gets compiled
 
 The build uses the upstream compiler translation units directly from the dependency:
