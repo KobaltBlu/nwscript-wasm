@@ -263,6 +263,15 @@ compiler.dispose();
 
 The disassembler produces assembly containing instruction offsets, opcodes, operands, branch targets, and ACTION instructions.
 
+Structured inspection uses the same decoder and reports header metadata, code/file offsets, and semantic operand ranges without requiring the caller to parse the text listing:
+
+```js
+const inspection = compiler.inspectNcs(ncs);
+console.log(inspection.header.size, inspection.instructions[0].mnemonic);
+
+const standalone = await NWScriptCompiler.inspectNcs(ncs);
+```
+
 When a language specification is available, ACTION IDs are resolved to their symbolic NWScript function names:
 
 ```text

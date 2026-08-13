@@ -159,6 +159,85 @@ function asBytes(value) {
   throw new TypeError("Expected a string or Uint8Array");
 }
 
+function readModuleBuffer(module, ptr, size) {
+  if (!ptr || !size) {
+    return new Uint8Array(0);
+  }
+  return module.HEAPU8.slice(ptr, ptr + size);
+}
+
+function inspectNcsWithModule(module, ncs, actionNames) {
+  const bytes = asBytes(ncs);
+  const names = Array.isArray(actionNames) ? actionNames.join("\n") : "";
+
+  const dataPtr = module._malloc(Math.max(bytes.byteLength, 1));
+  if (!dataPtr) {
+    throw new Error("WASM allocation failed");
+  }
+
+  try {
+    if (bytes.byteLength > 0) {
+      module.HEAPU8.set(bytes, dataPtr);
+    }
+
+    const nameBytes = encoder.encode(names);
+    const namesPtr = module._malloc(nameBytes.byteLength + 1);
+    if (!namesPtr) {
+      throw new Error("WASM allocation failed");
+    }
+
+    try {
+      module.HEAPU8.set(nameBytes, namesPtr);
+      module.HEAPU8[namesPtr + nameBytes.byteLength] = 0;
+
+      const code = module._nwsc_inspect_ncs(dataPtr, bytes.byteLength, namesPtr);
+      if (code !== 0) {
+        const message = decoder.decode(
+          readModuleBuffer(
+            module,
+            module._nwsc_disassembly_error_data(),
+            module._nwsc_disassembly_error_size(),
+          ),
+        ).trim();
+        throw new Error(message || `Failed to inspect NCS (${code})`);
+      }
+
+      const json = decoder.decode(
+        readModuleBuffer(
+          module,
+          module._nwsc_inspection_data(),
+          module._nwsc_inspection_size(),
+        ),
+      );
+      return JSON.parse(json);
+    } finally {
+      module._free(namesPtr);
+    }
+  } finally {
+    module._free(dataPtr);
+  }
+}
+
+let standaloneInspectModulePromise;
+
+function getStandaloneInspectModule(moduleOptions) {
+  if (moduleOptions && Object.keys(moduleOptions).length > 0) {
+    return createNWScriptModule(moduleOptions).then((module) => {
+      assertAbiVersion(module);
+      return module;
+    });
+  }
+
+  if (!standaloneInspectModulePromise) {
+    standaloneInspectModulePromise = createNWScriptModule({}).then((module) => {
+      assertAbiVersion(module);
+      return module;
+    });
+  }
+
+  return standaloneInspectModulePromise;
+}
+
 export class NWScriptCompiler {
   static async getEmbeddedGameTargets(moduleOptions = {}) {
     const module = await createNWScriptModule(moduleOptions);
@@ -235,6 +314,12 @@ export class NWScriptCompiler {
     }
 
     return compiler;
+  }
+
+  static async inspectNcs(ncs, options = {}) {
+    const { actionNames = [], moduleOptions } = options ?? {};
+    const module = await getStandaloneInspectModule(moduleOptions);
+    return inspectNcsWithModule(module, ncs, actionNames);
   }
 
   #module;
@@ -372,6 +457,11 @@ export class NWScriptCompiler {
         this.#module._nwsc_disassembly_size(),
       ),
     );
+  }
+
+  inspectNcs(ncs) {
+    this.#assertAlive();
+    return inspectNcsWithModule(this.#module, ncs, this.#actionNames);
   }
 
   dispose() {

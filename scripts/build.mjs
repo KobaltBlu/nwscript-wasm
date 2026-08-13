@@ -66,6 +66,9 @@ const exportedFunctions = [
   "_nwsc_disassembly_size",
   "_nwsc_disassembly_error_data",
   "_nwsc_disassembly_error_size",
+  "_nwsc_inspect_ncs",
+  "_nwsc_inspection_data",
+  "_nwsc_inspection_size",
 ];
 
 const exportedRuntimeMethods = ["HEAPU8"];

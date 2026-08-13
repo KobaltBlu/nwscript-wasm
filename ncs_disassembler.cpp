@@ -26,13 +26,35 @@
 namespace {
 
 thread_local std::string gDisassembly;
+thread_local std::string gInspection;
 thread_local std::string gDisassemblyError;
 
 struct Instruction {
-  size_t offset = 0;
+  size_t offset = 0;      // code offset (header excluded)
+  size_t fileOffset = 0;  // physical file offset
+  size_t size = 0;
   uint8_t op = 0;
   uint8_t aux = 0;
   std::vector<uint8_t> extra;
+};
+
+struct NcsHeader {
+  bool present = false;
+  size_t size = 0;
+  std::string version;
+  uint32_t fileSize = 0;
+};
+
+struct InstructionPart {
+  const char* kind = "unknown";
+  size_t fileOffset = 0;
+  size_t length = 0;
+  std::string text;
+  bool hasNumber = false;
+  bool numberIsInteger = true;
+  double numberValue = 0;
+  bool hasString = false;
+  std::string stringValue;
 };
 
 uint16_t readU16(const uint8_t* p) {
@@ -90,6 +112,48 @@ std::string escapeString(const uint8_t* data, size_t size) {
   }
   out << '"';
   return out.str();
+}
+
+std::string jsonEscape(const char* data, size_t size) {
+  std::string out;
+  out.push_back('"');
+  for (size_t i = 0; i < size; ++i) {
+    const unsigned char ch = static_cast<unsigned char>(data[i]);
+    switch (ch) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (ch < 0x20 || ch >= 0x7f) {
+          out += "\\u";
+          out += hexValue(ch, 4);
+        } else {
+          out.push_back(static_cast<char>(ch));
+        }
+        break;
+    }
+  }
+  out.push_back('"');
+  return out;
+}
+
+std::string jsonEscape(const std::string& value) {
+  return jsonEscape(value.data(), value.size());
+}
+
+std::string jsonNumber(double value, bool integer) {
+  if (integer) {
+    std::ostringstream out;
+    out << static_cast<int64_t>(value);
+    return out.str();
+  }
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%.9g", value);
+  return buffer;
 }
 
 const char* opName(uint8_t op) {
@@ -217,18 +281,31 @@ size_t fixedExtraSize(uint8_t op, uint8_t aux) {
   }
 }
 
-bool parseInstructions(const uint8_t* data, size_t size, std::vector<Instruction>& out) {
+bool parseInstructions(
+    const uint8_t* data,
+    size_t size,
+    std::vector<Instruction>& out,
+    NcsHeader& header) {
+  header = {};
   if (data == nullptr || size == 0) {
     gDisassemblyError = "NCS input is empty";
     return false;
   }
 
   size_t pos = 0;
-  if (size >= 13 && std::memcmp(data, "NCS V1.0", 8) == 0) {
+  if (size >= 8 && std::memcmp(data, "NCS V1.0", 8) == 0) {
+    if (size < 13) {
+      gDisassemblyError = "Truncated NCS header";
+      return false;
+    }
     if (data[8] != 'B') {
       gDisassemblyError = "Invalid NCS header byte at offset 8";
       return false;
     }
+    header.present = true;
+    header.size = 13;
+    header.version = "V1.0";
+    header.fileSize = readU32(data + 9);
     pos = 13;
   }
 
@@ -239,7 +316,8 @@ bool parseInstructions(const uint8_t* data, size_t size, std::vector<Instruction
     }
 
     Instruction ins;
-    ins.offset = pos - (pos >= 13 && std::memcmp(data, "NCS V1.0", 8) == 0 ? 13 : 0);
+    ins.fileOffset = pos;
+    ins.offset = pos - header.size;
     ins.op = data[pos++];
     ins.aux = data[pos++];
 
@@ -265,6 +343,7 @@ bool parseInstructions(const uint8_t* data, size_t size, std::vector<Instruction
 
     ins.extra.assign(data + pos, data + pos + extraSize);
     pos += extraSize;
+    ins.size = pos - ins.fileOffset;
     out.push_back(std::move(ins));
   }
 
@@ -306,6 +385,25 @@ bool isJump(uint8_t op) {
   return op == 0x1D || op == 0x1E || op == 0x1F || op == 0x25;
 }
 
+std::string formatJumpOperand(
+    const Instruction& ins,
+    const std::unordered_map<size_t, std::string>& labels,
+    int32_t* relativeOut = nullptr,
+    int64_t* targetOut = nullptr) {
+  const int32_t rel = readI32(ins.extra.data());
+  const int64_t target = static_cast<int64_t>(ins.offset) + rel;
+  if (relativeOut) *relativeOut = rel;
+  if (targetOut) *targetOut = target;
+  auto it = labels.find(static_cast<size_t>(target));
+  if (target >= 0 && it != labels.end()) {
+    return it->second;
+  }
+  std::ostringstream out;
+  out << (rel < 0 ? "-" : "+") << "0x"
+      << hexValue(static_cast<uint32_t>(rel < 0 ? -rel : rel), 8);
+  return out.str();
+}
+
 std::string formatOperand(
     const Instruction& ins,
     const std::unordered_map<size_t, std::string>& labels,
@@ -345,14 +443,9 @@ std::string formatOperand(
     case 0x1D:
     case 0x1E:
     case 0x1F:
-    case 0x25: {
-      const int32_t rel = readI32(x);
-      const size_t target = static_cast<size_t>(static_cast<int64_t>(ins.offset) + rel);
-      auto it = labels.find(target);
-      if (it != labels.end()) out << it->second;
-      else out << (rel < 0 ? "-" : "+") << "0x" << hexValue(static_cast<uint32_t>(rel < 0 ? -rel : rel), 8);
+    case 0x25:
+      out << formatJumpOperand(ins, labels);
       break;
-    }
 
     case 0x1B:
     case 0x23:
@@ -400,22 +493,7 @@ std::string rawBytes(const Instruction& ins) {
   return out.str();
 }
 
-} // namespace
-
-extern "C" {
-
-NWSC_DISASM_EXPORT int32_t nwsc_disassemble(
-    const uint8_t* data,
-    size_t size,
-    const char* actionNames) {
-  gDisassembly.clear();
-  gDisassemblyError.clear();
-
-  std::vector<Instruction> instructions;
-  if (!parseInstructions(data, size, instructions)) {
-    return 1;
-  }
-
+std::unordered_map<size_t, std::string> buildLabels(const std::vector<Instruction>& instructions) {
   std::unordered_set<size_t> jsrTargets;
   std::unordered_set<size_t> branchTargets;
   for (const Instruction& ins : instructions) {
@@ -430,6 +508,400 @@ NWSC_DISASM_EXPORT int32_t nwsc_disassemble(
   std::unordered_map<size_t, std::string> labels;
   for (size_t target : branchTargets) labels[target] = "off_" + hexValue(target, 8);
   for (size_t target : jsrTargets) labels[target] = "fn_" + hexValue(target, 8);
+  return labels;
+}
+
+InstructionPart makePart(
+    const char* kind,
+    size_t fileOffset,
+    size_t length,
+    const std::string& text = {}) {
+  InstructionPart part;
+  part.kind = kind;
+  part.fileOffset = fileOffset;
+  part.length = length;
+  part.text = text;
+  return part;
+}
+
+InstructionPart makeIntPart(
+    const char* kind,
+    size_t fileOffset,
+    size_t length,
+    const std::string& text,
+    int64_t value) {
+  InstructionPart part = makePart(kind, fileOffset, length, text);
+  part.hasNumber = true;
+  part.numberIsInteger = true;
+  part.numberValue = static_cast<double>(value);
+  return part;
+}
+
+InstructionPart makeFloatPart(
+    size_t fileOffset,
+    size_t length,
+    const std::string& text,
+    double value) {
+  InstructionPart part = makePart("float", fileOffset, length, text);
+  part.hasNumber = true;
+  part.numberIsInteger = false;
+  part.numberValue = value;
+  return part;
+}
+
+InstructionPart makeStringPart(
+    const char* kind,
+    size_t fileOffset,
+    size_t length,
+    const std::string& text,
+    const std::string& value) {
+  InstructionPart part = makePart(kind, fileOffset, length, text);
+  part.hasString = true;
+  part.stringValue = value;
+  return part;
+}
+
+void appendUnknownTail(
+    std::vector<InstructionPart>& parts,
+    const Instruction& ins,
+    size_t extraConsumed) {
+  if (extraConsumed >= ins.extra.size()) {
+    return;
+  }
+  const size_t remaining = ins.extra.size() - extraConsumed;
+  parts.push_back(makePart(
+      "unknown",
+      ins.fileOffset + 2 + extraConsumed,
+      remaining,
+      hexValue(ins.extra[extraConsumed], 2)));
+}
+
+std::vector<InstructionPart> describeParts(
+    const Instruction& ins,
+    const std::unordered_map<size_t, std::string>& labels,
+    const std::vector<std::string>& actionNames) {
+  std::vector<InstructionPart> parts;
+  parts.push_back(makeIntPart(
+      "opcode",
+      ins.fileOffset,
+      1,
+      hexValue(ins.op, 2),
+      ins.op));
+  parts.push_back(makeIntPart(
+      "aux",
+      ins.fileOffset + 1,
+      1,
+      hexValue(ins.aux, 2),
+      ins.aux));
+
+  const auto* x = ins.extra.data();
+  const size_t extraBase = ins.fileOffset + 2;
+  size_t consumed = 0;
+
+  switch (ins.op) {
+    case 0x04:
+      switch (ins.aux) {
+        case 0x03: {
+          const int32_t value = readI32(x);
+          parts.push_back(makeIntPart(
+              "integer",
+              extraBase,
+              4,
+              hexValue(static_cast<uint32_t>(value), 8),
+              value));
+          consumed = 4;
+          break;
+        }
+        case 0x04: {
+          const float value = readF32(x);
+          std::ostringstream text;
+          text << std::fixed << std::setprecision(6) << value;
+          parts.push_back(makeFloatPart(extraBase, 4, text.str(), value));
+          consumed = 4;
+          break;
+        }
+        case 0x06: {
+          const uint32_t value = readU32(x);
+          parts.push_back(makeIntPart(
+              "object",
+              extraBase,
+              4,
+              hexValue(value, 8),
+              value));
+          consumed = 4;
+          break;
+        }
+        case 0x05:
+        case 0x17: {
+          const uint16_t len = readU16(x);
+          parts.push_back(makeIntPart(
+              "stringLength",
+              extraBase,
+              2,
+              hexValue(len, 4),
+              len));
+          const size_t dataLen = ins.extra.size() >= 2 ? ins.extra.size() - 2 : 0;
+          parts.push_back(makeStringPart(
+              "stringData",
+              extraBase + 2,
+              dataLen,
+              escapeString(x + 2, len),
+              std::string(reinterpret_cast<const char*>(x + 2), len)));
+          consumed = ins.extra.size();
+          break;
+        }
+        case 0x12: {
+          const uint32_t value = readU32(x);
+          parts.push_back(makeIntPart(
+              "integer",
+              extraBase,
+              4,
+              hexValue(value, 8),
+              value));
+          consumed = 4;
+          break;
+        }
+        default:
+          break;
+      }
+      break;
+
+    case 0x05: {
+      const uint16_t id = readU16(x);
+      const uint8_t argc = x[2];
+      std::string actionText;
+      if (id < actionNames.size() && !actionNames[id].empty()) {
+        actionText = actionNames[id] + "(" + hexValue(id, 4) + ")";
+      } else {
+        actionText = hexValue(id, 4);
+      }
+      parts.push_back(makeIntPart("actionId", extraBase, 2, actionText, id));
+      parts.push_back(makeIntPart(
+          "argumentCount",
+          extraBase + 2,
+          1,
+          hexValue(argc, 2),
+          argc));
+      consumed = 3;
+      break;
+    }
+
+    case 0x1D:
+    case 0x1E:
+    case 0x1F:
+    case 0x25: {
+      int32_t rel = 0;
+      int64_t target = 0;
+      const std::string text = formatJumpOperand(ins, labels, &rel, &target);
+      parts.push_back(makeIntPart("address", extraBase, 4, text, rel));
+      consumed = 4;
+      break;
+    }
+
+    case 0x1B:
+    case 0x23:
+    case 0x24:
+    case 0x28:
+    case 0x29: {
+      const int32_t value = readI32(x);
+      parts.push_back(makeIntPart(
+          "stackOffset",
+          extraBase,
+          4,
+          hexValue(static_cast<uint32_t>(value), 8),
+          value));
+      consumed = 4;
+      break;
+    }
+
+    case 0x2C: {
+      const uint32_t first = readU32(x);
+      const uint32_t second = readU32(x + 4);
+      parts.push_back(makeIntPart("integer", extraBase, 4, hexValue(first, 8), first));
+      parts.push_back(makeIntPart("integer", extraBase + 4, 4, hexValue(second, 8), second));
+      consumed = 8;
+      break;
+    }
+
+    case 0x03:
+    case 0x27:
+    case 0x01:
+    case 0x26: {
+      const int32_t stack = readI32(x);
+      const uint16_t copySize = readU16(x + 4);
+      parts.push_back(makeIntPart(
+          "stackOffset",
+          extraBase,
+          4,
+          hexValue(static_cast<uint32_t>(stack), 8),
+          stack));
+      parts.push_back(makeIntPart(
+          "size",
+          extraBase + 4,
+          2,
+          hexValue(copySize, 4),
+          copySize));
+      consumed = 6;
+      break;
+    }
+
+    case 0x21: {
+      const uint16_t a = readU16(x);
+      const uint16_t b = readU16(x + 2);
+      const uint16_t c = readU16(x + 4);
+      parts.push_back(makeIntPart("size", extraBase, 2, hexValue(a, 4), a));
+      parts.push_back(makeIntPart("size", extraBase + 2, 2, hexValue(b, 4), b));
+      parts.push_back(makeIntPart("size", extraBase + 4, 2, hexValue(c, 4), c));
+      consumed = 6;
+      break;
+    }
+
+    case 0x0B:
+    case 0x0C:
+      if (ins.extra.size() == 2) {
+        const uint16_t value = readU16(x);
+        parts.push_back(makeIntPart("size", extraBase, 2, hexValue(value, 4), value));
+        consumed = 2;
+      }
+      break;
+
+    default:
+      break;
+  }
+
+  appendUnknownTail(parts, ins, consumed);
+  return parts;
+}
+
+void appendJsonPart(std::ostringstream& out, const InstructionPart& part) {
+  out << "{\"kind\":" << jsonEscape(part.kind)
+      << ",\"fileOffset\":" << part.fileOffset
+      << ",\"length\":" << part.length;
+  if (!part.text.empty()) {
+    out << ",\"text\":" << jsonEscape(part.text);
+  }
+  if (part.hasNumber) {
+    out << ",\"value\":" << jsonNumber(part.numberValue, part.numberIsInteger);
+  } else if (part.hasString) {
+    out << ",\"value\":" << jsonEscape(part.stringValue);
+  }
+  out << '}';
+}
+
+std::vector<InstructionPart> describeHeaderParts(const NcsHeader& header) {
+  std::vector<InstructionPart> parts;
+  if (!header.present) {
+    return parts;
+  }
+  parts.push_back(makeStringPart("unknown", 0, 8, "NCS V1.0", "NCS V1.0"));
+  parts.push_back(makeStringPart("unknown", 8, 1, "B", "B"));
+  parts.push_back(makeIntPart(
+      "size",
+      9,
+      4,
+      hexValue(header.fileSize, 8),
+      header.fileSize));
+  return parts;
+}
+
+std::string buildInspectionJson(
+    const NcsHeader& header,
+    const std::vector<Instruction>& instructions,
+    const std::unordered_map<size_t, std::string>& labels,
+    const std::vector<std::string>& actionNames) {
+  std::ostringstream out;
+  out << "{\"header\":{\"present\":" << (header.present ? "true" : "false")
+      << ",\"size\":" << header.size;
+  if (header.present) {
+    out << ",\"version\":" << jsonEscape(header.version)
+        << ",\"fileSize\":" << header.fileSize;
+  }
+  out << ",\"parts\":[";
+  const auto headerParts = describeHeaderParts(header);
+  for (size_t i = 0; i < headerParts.size(); ++i) {
+    if (i > 0) out << ',';
+    appendJsonPart(out, headerParts[i]);
+  }
+  out << "]},\"instructions\":[";
+
+  for (size_t i = 0; i < instructions.size(); ++i) {
+    const Instruction& ins = instructions[i];
+    if (i > 0) out << ',';
+
+    const std::string mnemonic = canonicalName(ins);
+    const std::string operand = formatOperand(ins, labels, actionNames);
+    const std::string raw = rawBytes(ins);
+    const auto parts = describeParts(ins, labels, actionNames);
+
+    out << "{\"index\":" << i
+        << ",\"codeOffset\":" << ins.offset
+        << ",\"fileOffset\":" << ins.fileOffset
+        << ",\"size\":" << ins.size
+        << ",\"opcode\":" << static_cast<unsigned>(ins.op)
+        << ",\"aux\":" << static_cast<unsigned>(ins.aux)
+        << ",\"mnemonic\":" << jsonEscape(mnemonic)
+        << ",\"operandText\":" << jsonEscape(operand)
+        << ",\"rawText\":" << jsonEscape(raw)
+        << ",\"parts\":[";
+    for (size_t p = 0; p < parts.size(); ++p) {
+      if (p > 0) out << ',';
+      appendJsonPart(out, parts[p]);
+    }
+    out << ']';
+
+    if (isJump(ins.op) && ins.extra.size() == 4) {
+      const int32_t rel = readI32(ins.extra.data());
+      const int64_t target = static_cast<int64_t>(ins.offset) + rel;
+      if (target >= 0) {
+        out << ",\"jumpTarget\":" << target;
+      }
+    }
+
+    if (ins.op == 0x05 && ins.extra.size() >= 3) {
+      const uint16_t id = readU16(ins.extra.data());
+      out << ",\"actionId\":" << id;
+      if (id < actionNames.size() && !actionNames[id].empty()) {
+        out << ",\"actionName\":" << jsonEscape(actionNames[id]);
+      }
+    }
+
+    out << '}';
+  }
+
+  out << "]}";
+  return out.str();
+}
+
+bool decodeNcs(
+    const uint8_t* data,
+    size_t size,
+    NcsHeader& header,
+    std::vector<Instruction>& instructions,
+    std::unordered_map<size_t, std::string>& labels) {
+  if (!parseInstructions(data, size, instructions, header)) {
+    return false;
+  }
+  labels = buildLabels(instructions);
+  return true;
+}
+
+} // namespace
+
+extern "C" {
+
+NWSC_DISASM_EXPORT int32_t nwsc_disassemble(
+    const uint8_t* data,
+    size_t size,
+    const char* actionNames) {
+  gDisassembly.clear();
+  gDisassemblyError.clear();
+
+  NcsHeader header;
+  std::vector<Instruction> instructions;
+  std::unordered_map<size_t, std::string> labels;
+  if (!decodeNcs(data, size, header, instructions, labels)) {
+    return 1;
+  }
 
   const auto actions = parseActionNames(actionNames);
   std::ostringstream out;
@@ -465,6 +937,32 @@ NWSC_DISASM_EXPORT const char* nwsc_disassembly_error_data() {
 
 NWSC_DISASM_EXPORT size_t nwsc_disassembly_error_size() {
   return gDisassemblyError.size();
+}
+
+NWSC_DISASM_EXPORT int32_t nwsc_inspect_ncs(
+    const uint8_t* data,
+    size_t size,
+    const char* actionNames) {
+  gInspection.clear();
+  gDisassemblyError.clear();
+
+  NcsHeader header;
+  std::vector<Instruction> instructions;
+  std::unordered_map<size_t, std::string> labels;
+  if (!decodeNcs(data, size, header, instructions, labels)) {
+    return 1;
+  }
+
+  gInspection = buildInspectionJson(header, instructions, labels, parseActionNames(actionNames));
+  return 0;
+}
+
+NWSC_DISASM_EXPORT const char* nwsc_inspection_data() {
+  return gInspection.c_str();
+}
+
+NWSC_DISASM_EXPORT size_t nwsc_inspection_size() {
+  return gInspection.size();
 }
 
 }
