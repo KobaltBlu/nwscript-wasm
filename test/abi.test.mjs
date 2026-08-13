@@ -13,7 +13,7 @@ function readProject(...parts) {
 function collectCppExports(source) {
   const names = new Set();
   for (const line of source.split(/\r?\n/)) {
-    if (!/NWSC_(?:EXPORT|DISASM_EXPORT|EMBED_EXPORT)/.test(line)) {
+    if (!/NWSC_(?:EXPORT|DISASM_EXPORT|EMBED_EXPORT|NDB_EXPORT)/.test(line)) {
       continue;
     }
     const match = line.match(/\b(nwsc_\w+)\s*\(/);
@@ -28,6 +28,7 @@ describe("WASM/JS ABI", () => {
   const cppExports = new Set([
     ...collectCppExports(readProject("compiler_wasm.cpp")),
     ...collectCppExports(readProject("ncs_disassembler.cpp")),
+    ...collectCppExports(readProject("ndb_inspector.cpp")),
     ...collectCppExports(readProject("scripts", "generate-game-targets.mjs")),
   ]);
 
